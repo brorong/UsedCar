@@ -301,6 +301,6 @@ if __name__ == "__main__":
         data = fetch_n7_data()
         message = build_message(data)
         print("=" * 40 + "\n" + message + "\n" + "=" * 40)
-        # send_line(message) # 測試成功後取消註解
+        send_line(message) # 測試成功後取消註解
     except Exception as e:
         print(f"❌ 系統錯誤：{e}"); raise
