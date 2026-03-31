@@ -97,8 +97,23 @@ def run_hot_scraper():
     chrome_options.add_argument("--disable-gpu")
     chrome_options.add_argument("--no-sandbox")
     chrome_options.add_experimental_option('excludeSwitches', ['enable-logging'])
+    
+    # 🛡️ 新增：防崩潰與效能優化參數
+    chrome_options.add_argument("--disable-dev-shm-usage") # 解決 GitHub 記憶體不足
+    
+    # 🏎️ 新增：不加載圖片，大幅加快速度並節省記憶體
+    prefs = {"profile.managed_default_content_settings.images": 2}
+    chrome_options.add_experimental_option("prefs", prefs)
+    
+    # ⏱️ 新增：Eager 模式 (DOM 載入完就開爬，不等廣告)
+    chrome_options.page_load_strategy = 'eager'
 
     driver = webdriver.Chrome(options=chrome_options)
+    
+    # ⏳ 新增：強制延長連線與腳本等待時間到 120 秒
+    driver.set_page_load_timeout(120)
+    driver.set_script_timeout(120)
+    
     valid_cars = []
     global_seen_ids = set()
 
@@ -106,7 +121,12 @@ def run_hot_scraper():
         for brand, models in TARGET_CARS.items():
             for model_name in models:
                 url = SEARCH_URL.format(keyword=model_name)
-                driver.get(url)
+                
+                try:
+                    driver.get(url)
+                except TimeoutException:
+                    print(f"⚠️ 警告: 載入 {model_name} 頁面時超時，嘗試繼續執行...")
+                    # 即使超時，頁面可能已經載入一半了，我們繼續往下走
 
                 page_count = 1
                 model_total = 0
