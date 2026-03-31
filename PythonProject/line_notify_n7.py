@@ -18,8 +18,8 @@ from typing import List, Dict, Optional
 #  ⚙️  設定區
 # ══════════════════════════════════════════════════════════════════════════════
 DB_NAME = "car_listings_v2.db"
-LINE_CHANNEL_ACCESS_TOKEN = "uyA9F2iAJExlNKugm5Qy++CL2mBSg1ilWVHIeNXGChFVm9VvtnW8nSo82V3xIj920ueEy0V9a7iB1UcFYyhHwpRBF8H3uh0hfn28w8iofDK6RNu5pSyJjYxpu6X1nzV2W7dJlUPTfpB8iej5hRbGkgdB04t89/1O/w1cDnyilFU="
-LINE_USER_ID = "C02e2660e843f279008646177fa2ff66f"
+LINE_CHANNEL_ACCESS_TOKEN = os.getenv("LINE_TOKEN", "您的備用TOKEN")
+LINE_USER_ID = os.getenv("LINE_GROUP_ID", "您的群組ID")
 LINE_MSG_LIMIT = 4500
 
 TARGET_BRAND = "LUXGEN"
