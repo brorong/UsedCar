@@ -1,69 +1,88 @@
-name: 🏎️ 六大平台二手車全網監控系統
+name: 🏎️ 全自動二手車監控與 N7 戰報系統
 
 on:
   schedule:
-    # 台灣時間每天早上 06:30 執行 (22:30 UTC)
+    # 台灣時間每天早上 06:30 執行 (UTC 22:30)
     - cron: '30 22 * * *'
-  workflow_dispatch: # 讓您可以手動隨時觸發
+  workflow_dispatch: # 允許手動隨時在 GitHub 網頁上點擊執行
+
+# 賦予 GitHub Token 寫入權限，這步非常重要，否則無法儲存更新後的資料庫
+permissions:
+  contents: write
 
 jobs:
   car-monitor-job:
     runs-on: ubuntu-latest
 
     steps:
-    - name: 📥 檢出程式碼
+    - name: 📥 1. 檢出程式碼 (Checkout)
       uses: actions/checkout@v3
 
-    - name: 🐍 設定 Python 環境
+    - name: 🐍 2. 設定 Python 環境 (Python 3.9)
       uses: actions/setup-python@v4
       with:
         python-version: '3.9'
 
-    - name: 🌐 安裝 Chrome 瀏覽器 (Selenium 必備)
+    - name: 🌐 3. 安裝 Chrome 瀏覽器 (LuxLife 爬蟲渲染所需)
       run: |
         sudo apt-get update
         sudo apt-get install -y google-chrome-stable
 
-    - name: 📦 安裝 Python 必要套件
+    - name: 📦 4. 安裝 Python 必要套件
       run: |
         python -m pip install --upgrade pip
-        pip install -r requirements.txt
+        # 確保您的根目錄有 requirements.txt，內容需含 requests, beautifulsoup4, selenium
+        if [ -f requirements.txt ]; then pip install -r requirements.txt; fi
 
-    - name: 🕷️ 執行【1/6】8891 爬蟲
+    - name: 🕷️ 5. 執行【1/6】8891 爬蟲
+      env:
+        PYTHONPATH: ${{ github.workspace }}/PythonProject
       run: python PythonProject/crawler_8891.py
-      continue-on-error: true # 即使其中一支掛掉，後面的也要繼續跑
+      continue-on-error: true
 
-    - name: 🕷️ 執行【2/6】SAVE 爬蟲
+    - name: 🕷️ 6. 執行【2/6】SAVE 爬蟲
+      env:
+        PYTHONPATH: ${{ github.workspace }}/PythonProject
       run: python PythonProject/crawler_save.py
       continue-on-error: true
 
-    - name: 🕷️ 執行【3/6】HOT 爬蟲
+    - name: 🕷️ 7. 執行【3/6】HOT 爬蟲
+      env:
+        PYTHONPATH: ${{ github.workspace }}/PythonProject
       run: python PythonProject/crawler_hot.py
       continue-on-error: true
 
-    - name: 🕷️ 執行【4/6】SUM 爬蟲
+    - name: 🕷️ 8. 執行【4/6】SUM 爬蟲
+      env:
+        PYTHONPATH: ${{ github.workspace }}/PythonProject
       run: python PythonProject/crawler_sum.py
       continue-on-error: true
 
-    - name: 🕷️ 執行【5/6】ABC 爬蟲
+    - name: 🕷️ 9. 執行【5/6】ABC 爬蟲
+      env:
+        PYTHONPATH: ${{ github.workspace }}/PythonProject
       run: python PythonProject/crawler_abc.py
       continue-on-error: true
 
-    - name: 🕷️ 執行【6/6】LUXLIFE 原廠爬蟲
+    - name: 🕷️ 10. 執行【6/6】LUXLIFE 原廠爬蟲
+      env:
+        PYTHONPATH: ${{ github.workspace }}/PythonProject
       run: python PythonProject/luxlife_crawler.py
       continue-on-error: true
 
-    - name: 🚀 執行 N7 戰情報推播 (LINE)
+    - name: 🚀 11. 執行 N7 戰情報推播 (LINE)
       env:
+        # 請確保您已在 GitHub Secrets 設定這兩個變數
         LINE_TOKEN: ${{ secrets.LINE_TOKEN }}
         LINE_GROUP_ID: ${{ secrets.LINE_GROUP_ID }}
+        PYTHONPATH: ${{ github.workspace }}/PythonProject
       run: python PythonProject/line_notify_n7.py
 
-    - name: 💾 保存最新數據 (Git Push)
-      # 關鍵步驟：把爬蟲更新後的 .db 檔案存回 GitHub，否則下次執行會變回舊數據
+    - name: 💾 12. 保存最新數據 (Git Push)
+      # 將爬蟲更新後的 .db 檔案存回 GitHub，保留價格歷史
       run: |
         git config --local user.email "action@github.com"
         git config --local user.name "GitHub Action Bot"
         git add car_listings_v2.db
-        git commit -m "📊 自動更新資料庫: $(date +'%Y-%m-%d %H:%M')" || echo "無資料異動"
-        git push
+        # 只有當資料庫有變動時才提交，避免噴錯
+        git diff --quiet && git diff --staged --quiet || (git commit -m "📊 自動更新資料庫: $(date +'%Y-%m-%d %H:%M')" && git push)
