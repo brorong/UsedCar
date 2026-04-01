@@ -3,7 +3,6 @@ import time
 from bs4 import BeautifulSoup
 from selenium import webdriver
 from selenium.webdriver.chrome.options import Options
-from selenium.webdriver.chrome.service import Service
 from selenium.webdriver.common.by import By
 from selenium.webdriver.support.ui import WebDriverWait
 from selenium.webdriver.support import expected_conditions as EC
@@ -126,23 +125,17 @@ def parse_car_card(card_div, target_brand, target_model):
 # ──────────────────────────────────────────────
 
 def build_driver() -> webdriver.Chrome:
-    """
-    在 GitHub Actions (ubuntu-latest) 上：
-      - Chrome 與 chromedriver 已預裝，版本自動對齊。
-      - 必須加 --no-sandbox / --disable-dev-shm-usage。
-      - 不需要 Xvfb（headless 模式下不需要顯示器）。
-    本地 Windows/macOS 同樣可用。
-    """
     options = Options()
 
-    # ── 無頭模式（GitHub Actions 無顯示器）──
-    options.add_argument("--headless=new")          # Chrome ≥ 112 推薦寫法
-    options.add_argument("--no-sandbox")            # GitHub Actions 必要
-    options.add_argument("--disable-dev-shm-usage") # 避免 /dev/shm 空間不足
+    options.add_argument("--headless=new")
+    options.add_argument("--no-sandbox")
+    options.add_argument("--disable-dev-shm-usage")
     options.add_argument("--disable-gpu")
     options.add_argument("--window-size=1920,1080")
+    
+    # 🔥 加回：忽略可能導致連線中斷的憑證錯誤
+    options.add_argument("--ignore-certificate-errors")
 
-    # ── 反機器人偽裝 ──
     options.add_argument(
         "user-agent=Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
         "AppleWebKit/537.36 (KHTML, like Gecko) "
@@ -152,20 +145,19 @@ def build_driver() -> webdriver.Chrome:
     options.add_experimental_option("excludeSwitches", ["enable-automation", "enable-logging"])
     options.add_experimental_option("useAutomationExtension", False)
 
-    # ── 效能：不載入圖片 ──
     options.add_experimental_option(
         "prefs", {"profile.managed_default_content_settings.images": 2}
     )
-    options.page_load_strategy = "eager"
+    
+    # 🔥 終極解法：將載入策略改為 none，不理會拖台錢的廣告與無窮迴圈 JS
+    options.page_load_strategy = "none"
 
-    # ── 讓 Selenium Manager 自動下載對應版本 chromedriver ──
-    #    （Selenium 4.6+ 內建，不需要手動指定 Service 路徑）
     driver = webdriver.Chrome(options=options)
 
-    driver.set_page_load_timeout(30)
-    driver.set_script_timeout(30)
+    # ⏳ 延長超時容忍度至 60 秒
+    driver.set_page_load_timeout(60)
+    driver.set_script_timeout(60)
 
-    # 隱藏 webdriver 特徵
     driver.execute_cdp_cmd(
         "Page.addScriptToEvaluateOnNewDocument",
         {"source": "Object.defineProperty(navigator, 'webdriver', {get: () => undefined})"},
@@ -178,7 +170,7 @@ def build_driver() -> webdriver.Chrome:
 # 主爬蟲邏輯
 # ──────────────────────────────────────────────
 
-def _wait_for_list(driver, timeout=10):
+def _wait_for_list(driver, timeout=20):  # 🔥 放寬元素等待時間至 20 秒
     """等待車輛列表出現，回傳 True/False。"""
     try:
         WebDriverWait(driver, timeout).until(
@@ -204,7 +196,6 @@ def _get_first_href(driver) -> str:
 def _click_next_page(driver, next_page_num: int) -> bool:
     """
     嘗試點擊下一頁，成功回傳 True，找不到按鈕回傳 False。
-    先找頁碼數字，找不到再找文字型下一頁按鈕。
     """
     xpaths = [
         f"//a[normalize-space(text())='{next_page_num}']",
@@ -234,28 +225,24 @@ def _scrape_task(driver, task: dict, global_seen_ids: set) -> list:
 
     print(f"  🔍 開始搜尋 {model_display}...")
 
-    # ── 載入第一頁 ──
     try:
         driver.get(url)
     except TimeoutException:
-        print(f"    ⚠️ {model_display} 初始頁逾時，嘗試繼續解析現有內容...")
+        print(f"    ⚠️ {model_display} 初始頁逾時，嘗試強制介入擷取...")
     except WebDriverException as exc:
         print(f"    ❌ {model_display} 載入失敗（{exc.__class__.__name__}），跳過。")
         return results
 
     while True:
-        # 等待列表渲染
         if not _wait_for_list(driver):
-            print(f"    ⚠️ {model_display} 第 {page_count} 頁找不到車輛列表，停止。")
+            print(f"    ⚠️ {model_display} 第 {page_count} 頁找不到車輛列表 (可能是無資料或遭阻擋)。")
             break
 
-        # 輕微捲頁觸發懶加載
         driver.execute_script("window.scrollTo(0, document.body.scrollHeight / 2);")
-        time.sleep(0.8)
+        time.sleep(1)
 
         old_first_href = _get_first_href(driver)
 
-        # 解析當前頁
         soup  = BeautifulSoup(driver.page_source, "html.parser")
         cards = soup.select('div.shop-list, li:has(a[href*="carinfo"])')
 
@@ -269,21 +256,17 @@ def _scrape_task(driver, task: dict, global_seen_ids: set) -> list:
                 results.append(car_data)
                 new_count += 1
 
-        print(f"    第 {page_count} 頁：新增 {new_count} 筆")
+        print(f"    第 {page_count} 頁：擷取 {new_count} 筆")
 
-        # 停止條件：本頁無新資料，或頁數超過上限
         if new_count == 0 or page_count >= 50:
             break
 
-        # 嘗試翻頁
         if not _click_next_page(driver, page_count + 1):
             print(f"    -> 已達最後一頁，停止翻頁。")
             break
 
-        # 等待頁面更新
         time.sleep(3)
 
-        # 確認真的換頁了
         new_first_href = _get_first_href(driver)
         if new_first_href and new_first_href == old_first_href:
             print("    ⚠️ 頁面疑似未刷新，額外等待 2 秒...")
