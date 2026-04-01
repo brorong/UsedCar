@@ -1,6 +1,7 @@
 import sqlite3
 import datetime
 import time
+import random
 import re
 from bs4 import BeautifulSoup
 from typing import Dict, List
@@ -20,13 +21,13 @@ LUXLIFE_LIST_URL = "https://luxlife.luxgen-motor.com.tw/car-list"
 
 
 # ══════════════════════════════════════════════════════════════════════════════
-#  🕷️ 步驟 1 & 2：Selenium 網頁抓取 (支援「加載更多」按鈕)
+#  🕷️ 步驟 1 & 2：Selenium 網頁抓取 (支援「加載更多」按鈕與防阻擋機制)
 # ══════════════════════════════════════════════════════════════════════════════
 def fetch_luxlife_cars() -> List[Dict]:
     print("🚀 啟動 Selenium 隱形瀏覽器，準備抓取 LuxLife 原廠認證中古車...")
     standardized_cars = []
 
-    # 隱形瀏覽器設定 (🔥 終極效能優化版)
+    # 隱形瀏覽器設定 (🔥 終極效能優化與防封鎖版)
     chrome_options = Options()
     chrome_options.add_argument("--headless=new")
     chrome_options.add_argument("--disable-gpu")
@@ -34,27 +35,47 @@ def fetch_luxlife_cars() -> List[Dict]:
     chrome_options.add_argument("--no-sandbox")
     chrome_options.add_argument("--disable-dev-shm-usage") # 🛡️ 解決 GitHub 記憶體不足
     
+    # 🛡️ 新增：防封鎖特徵隱藏與真實 User-Agent
+    chrome_options.add_argument("--disable-blink-features=AutomationControlled")
+    chrome_options.add_experimental_option("excludeSwitches", ["enable-automation", "enable-logging"])
+    chrome_options.add_experimental_option('useAutomationExtension', False)
+    chrome_options.add_argument("user-agent=Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36")
+    
     # 🏎️ 效能優化：不加載圖片，大幅加快速度並節省記憶體
     prefs = {"profile.managed_default_content_settings.images": 2}
     chrome_options.add_experimental_option("prefs", prefs)
     
-    # ⏱️ Eager 模式 (DOM 載入完就開爬，不等廣告/圖片)
-    chrome_options.page_load_strategy = 'eager'
+    # ⏱️ 載入策略修改：使用 normal 確保第一波 JS 產生的 DOM 完全到位
+    chrome_options.page_load_strategy = 'normal'
 
     driver = None
     try:
         driver = webdriver.Chrome(options=chrome_options)
         
+        # 🛡️ 新增：抹除 WebDriver 屬性，防阻擋
+        driver.execute_script("Object.defineProperty(navigator, 'webdriver', {get: () => undefined})")
+        
         # ⏳ 強制延長連線與腳本等待時間到 120 秒
         driver.set_page_load_timeout(120)
         driver.set_script_timeout(120)
         
-        try:
-            driver.get(LUXLIFE_LIST_URL)
-        except TimeoutException:
-            print("⚠️ 警告: 載入 LuxLife 頁面時超時，嘗試繼續執行...")
-        except WebDriverException as e:
-            print(f"❌ 網頁載入失敗: {e}")
+        # 🛡️ 新增：網頁載入重試機制 (容錯處理)
+        load_success = False
+        for attempt in range(3):
+            try:
+                print(f"🌐 嘗試連線至 LuxLife (第 {attempt+1} 次)...")
+                driver.get(LUXLIFE_LIST_URL)
+                load_success = True
+                break
+            except TimeoutException:
+                print(f"  ⚠️ 警告: 載入頁面超時 (第 {attempt+1} 次)，休息後重試...")
+                time.sleep(5)
+            except WebDriverException as e:
+                print(f"  ⚠️ 網頁載入失敗 (第 {attempt+1} 次): {e}")
+                time.sleep(5)
+
+        if not load_success:
+            print("❌ 三次連線嘗試皆失敗，結束抓取。")
             return []
 
         print("⏳ 等待初始網頁動態渲染資料...")
@@ -75,11 +96,12 @@ def fetch_luxlife_cars() -> List[Dict]:
                 # 使用 JavaScript 強制點擊，避免被其他網頁元素遮擋
                 driver.execute_script("arguments[0].click();", load_more_btn)
                 click_count += 1
-                print(f"👉 第 {click_count} 次點擊「加載更多中古車」...")
+                print(f"  👉 第 {click_count} 次點擊「加載更多中古車」...")
 
-                time.sleep(2)  # 等待新車輛渲染
+                # 🛡️ 修改：使用隨機延遲模擬人類，避免點擊頻率過於固定
+                time.sleep(random.uniform(2, 4))
             except Exception:
-                print("✅ 已經沒有按鈕，所有車輛載入完畢！")
+                print("  ✅ 已經沒有按鈕，所有車輛載入完畢！")
                 break
 
         print("🔍 開始解析全部資料...")
@@ -98,7 +120,13 @@ def fetch_luxlife_cars() -> List[Dict]:
 
         for node in car_nodes:
             href = node.get('href')
-            car_id = re.search(r'id=(\d+)', href).group(1)
+            
+            # 🛡️ 防呆機制：確保 id 能被正確提取
+            id_match = re.search(r'id=(\d+)', href)
+            if not id_match:
+                continue
+            car_id = id_match.group(1)
+            
             full_url = f"https://luxlife.luxgen-motor.com.tw{href}"
 
             subtitle_div = node.find('div', class_='subtitle')
@@ -158,4 +186,5 @@ if __name__ == "__main__":
     luxlife_data = fetch_luxlife_cars()
     if luxlife_data:
         # 🔥 直接將清洗好的資料交給總管，省去落落長的 SQL 寫入代碼
+        print(f"[系統] 準備將 {len(luxlife_data)} 筆資料寫入資料庫...")
         db_manager.update_listings("LUXLIFE", luxlife_data)
