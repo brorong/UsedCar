@@ -58,11 +58,11 @@ jobs:
       run: python PythonProject/crawler_sum.py
       continue-on-error: true
 
-    - name: 🕷️ 9. 執行【5/6】ABC 爬蟲
-      env:
-        PYTHONPATH: ${{ github.workspace }}/PythonProject
-      run: python PythonProject/crawler_abc.py
-      continue-on-error: true
+    # - name: 🕷️ 9. 執行【5/6】ABC 爬蟲
+    #   env:
+    #     PYTHONPATH: ${{ github.workspace }}/PythonProject
+    #   run: python PythonProject/crawler_abc.py
+    #   continue-on-error: true
 
     - name: 🕷️ 10. 執行【6/6】LUXLIFE 原廠爬蟲
       env:
