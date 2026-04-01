@@ -10,10 +10,8 @@ from selenium.common.exceptions import TimeoutException, WebDriverException, NoS
 import db_manager  # 🔥 載入資料庫總管
 
 BASE_URL = "https://www.isave.com.tw"
-# 🔥 修正：捨棄無效的 p 參數，我們改用真實點擊翻頁
 SEARCH_URL = "https://www.isave.com.tw/cars.aspx?brand={brand}&style={style}"
 
-# 🔥 v3 競品全線開戰名單 (SAVE 專用)
 SEARCH_TASKS = [
     {"brand": "LUXGEN", "style": "n7", "display": "n7"},
     {"brand": "LUXGEN", "style": "URX", "display": "URX"},
@@ -25,7 +23,6 @@ SEARCH_TASKS = [
     {"brand": "HYUNDAI", "style": "SANTA+FE", "display": "Santa Fe"}
 ]
 
-
 def clean_price(raw_str):
     if not raw_str or "電洽" in raw_str: return None, "inquiry"
     raw_str = raw_str.replace(",", "").replace(" ", "").replace("\n", "").replace("\t", "")
@@ -33,14 +30,11 @@ def clean_price(raw_str):
     if m: return int(float(m.group(1)) * 10000), "normal"
     return None, "inquiry"
 
-
 def clean_mileage(raw_str):
     if not raw_str: return 0
-    raw_str = raw_str.replace(",", "").replace(" ", "").replace("\n", "").replace("公里", "").replace("km", "").replace(
-        "KM", "")
+    raw_str = raw_str.replace(",", "").replace(" ", "").replace("\n", "").replace("公里", "").replace("km", "").replace("KM", "")
     m = re.search(r"(\d+)", raw_str)
     return int(m.group(1)) if m else 0
-
 
 def parse_car_card(card_div, target_brand, target_model):
     raw_text = card_div.get_text(" ", strip=True)
@@ -83,9 +77,7 @@ def parse_car_card(card_div, target_brand, target_model):
     m_m = re.search(r"([\d,]+)\s*(?:公里|km)", raw_text, re.IGNORECASE)
     if m_m: data["mileage"] = clean_mileage(m_m.group(1))
 
-    loc_m = re.search(
-        r"(台北市|新北市|桃園市|台中市|台南市|高雄市|新竹縣|新竹市|苗栗縣|彰化縣|南投縣|雲林縣|嘉義縣|嘉義市|屏東縣|宜蘭縣|花蓮縣|台東縣|基隆市|澎湖縣|金門縣|連江縣)",
-        raw_text)
+    loc_m = re.search(r"(台北市|新北市|桃園市|台中市|台南市|高雄市|新竹縣|新竹市|苗栗縣|彰化縣|南投縣|雲林縣|嘉義縣|嘉義市|屏東縣|宜蘭縣|花蓮縣|台東縣|基隆市|澎湖縣|金門縣|連江縣)", raw_text)
     if loc_m: data["location"] = loc_m.group(1)
 
     p_m = re.search(r"([\d.]+)\s*萬", raw_text)
@@ -98,7 +90,7 @@ def parse_car_card(card_div, target_brand, target_model):
 
 
 def run_save_scraper():
-    print("[系統] 啟動 Selenium 隱形模式，掃描 SAVE 認證車聯盟 (突破 PostBack 限制版)...")
+    print("[系統] 啟動 Selenium 隱形模式，掃描 SAVE 認證車聯盟 (防死鎖優化版)...")
     chrome_options = Options()
     chrome_options.add_argument("--headless=new")
     chrome_options.add_argument("--disable-gpu")
@@ -106,22 +98,21 @@ def run_save_scraper():
     chrome_options.add_argument('--ignore-certificate-errors')
     chrome_options.add_experimental_option('excludeSwitches', ['enable-logging'])
     
-    # 🛡️ 核心防護：解決 GitHub Actions 記憶體不足與 Linux 權限問題
+    # 🛡️ 加入偽裝與核心防護
+    chrome_options.add_argument("user-agent=Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36")
+    chrome_options.add_argument("--disable-blink-features=AutomationControlled")
     chrome_options.add_argument("--disable-dev-shm-usage")
     chrome_options.add_argument("--no-sandbox")
     
-    # 🏎️ 效能優化：不加載圖片，大幅加快網頁解析速度
     prefs = {"profile.managed_default_content_settings.images": 2}
     chrome_options.add_experimental_option("prefs", prefs)
-    
-    # ⏱️ 載入策略：DOM 樹出來就開爬，不等廣告或過度肥大的元素
     chrome_options.page_load_strategy = 'eager'
 
     driver = webdriver.Chrome(options=chrome_options)
     
-    # ⏳ 強制延長等待時間至 120 秒，避免 GitHub 網路波動導致的 Timeout
-    driver.set_page_load_timeout(120)
-    driver.set_script_timeout(120)
+    # ⏳ 降回 30 秒停損點，卡住就強制中斷，不浪費 8 分鐘乾等
+    driver.set_page_load_timeout(30)
+    driver.set_script_timeout(30)
 
     valid_cars = []
     global_seen_ids = set()
@@ -133,25 +124,24 @@ def run_save_scraper():
             model_display = task['display']
             print(f"  🔍 開始搜尋 {model_display}...")
 
-            # 🔥 修正：只在第一頁使用 get() 載入，後續全靠 Selenium 點擊翻頁
             url = SEARCH_URL.format(brand=task['brand'], style=task['style'])
             try:
                 driver.get(url)
             except TimeoutException:
-                print(f"  ⚠️ {model_display} 網頁載入超時，嘗試繼續執行...")
+                print(f"    ⚠️ {model_display} 初始載入超過 30 秒，嘗試強制繼續解析...")
             except WebDriverException as e:
-                print(f"  ❌ {model_display} 網頁載入失敗: {e}，跳過。")
+                print(f"    ❌ {model_display} 網頁載入失敗，跳過。")
                 continue
 
             while True:
                 try:
                     WebDriverWait(driver, 10).until(EC.presence_of_element_located(
                         (By.CSS_SELECTOR, ".car-block-type2_item, .car_item, .car-card")))
-
                     driver.execute_script("window.scrollTo(0, document.body.scrollHeight/2);")
-                    time.sleep(2)
+                    time.sleep(1)
                 except TimeoutException:
-                    break  # 網頁卡死或真的沒資料了
+                    print(f"    ⚠️ 找不到車輛列表，該車型可能無資料或網頁卡死。")
+                    break
 
                 soup = BeautifulSoup(driver.page_source, "html.parser")
                 cards = soup.select('.car-block-type2_item, div[class*="car_item"], .car-card')
@@ -166,29 +156,34 @@ def run_save_scraper():
                         model_total += 1
 
                 if new_count == 0 or page_count >= 50:
-                    break  # 沒有新車或到達極限
+                    break
 
-                # 🔥 核心修正：模擬人類點擊網頁底下的分頁按鈕
+                # 🔥 終極防卡死：尋找並切換下一頁
                 next_page_target = str(page_count + 1)
                 try:
-                    # 尋找直接包含數字的 <a> 標籤 (ASP.NET 最常見做法)
-                    next_btn = driver.find_element(By.XPATH,
-                                                   f"//a[text()='{next_page_target}'] | //a[contains(@href, 'Page${next_page_target}')]")
-                    driver.execute_script("arguments[0].click();", next_btn)
-                    page_count += 1
-                    time.sleep(3)  # 給 ASP.NET 伺服器處理刷新 POST 請求的時間
-                except NoSuchElementException:
                     try:
-                        # 備案：尋找「下一頁」或「>」的箭頭符號
-                        next_btn = driver.find_element(By.XPATH,
-                                                       "//a[contains(text(), '下一頁') or contains(text(), '下頁') or text()='>']")
-                        driver.execute_script("arguments[0].click();", next_btn)
-                        page_count += 1
-                        time.sleep(3)
+                        next_btn = driver.find_element(By.XPATH, f"//a[text()='{next_page_target}'] | //a[contains(@href, 'Page${next_page_target}')]")
                     except NoSuchElementException:
-                        break  # 真的連按鈕都找不到了，代表翻到最後一頁
+                        next_btn = driver.find_element(By.XPATH, "//a[contains(text(), '下一頁') or contains(text(), '下頁') or text()='>']")
+                    
+                    print(f"    -> 找到第 {next_page_target} 頁，執行安全翻頁...")
+                    
+                    # 🚀 關鍵解法：使用 setTimeout 讓 JS 異步點擊，Selenium 絕對不會卡死！
+                    driver.execute_script("setTimeout(function(){ arguments[0].click(); }, 50);", next_btn)
+                    
+                    # 等待舊按鈕從畫面上消失 (代表網頁已經成功 PostBack 刷新)
+                    try:
+                        WebDriverWait(driver, 15).until(EC.staleness_of(next_btn))
+                    except TimeoutException:
+                        print("    ⚠️ 翻頁等待超時，直接嘗試擷取新畫面...")
+                        
+                    page_count += 1
+                    
+                except NoSuchElementException:
+                    print("    -> 找不到下一頁按鈕，已達最後一頁。")
+                    break
 
-            print(f"  ✅ {model_display} 完成！共抓取 {model_total} 筆資料 (掃描至第 {page_count} 頁)")
+            print(f"  ✅ {model_display} 完成！共抓取 {model_total} 筆資料")
 
     finally:
         driver.quit()
@@ -196,7 +191,6 @@ def run_save_scraper():
     if valid_cars:
         print(f"[系統] SAVE 認證車聯盟掃描完畢，總計入庫 {len(valid_cars)} 筆。")
         db_manager.update_listings("SAVE", valid_cars)
-
 
 if __name__ == "__main__":
     run_save_scraper()
