@@ -124,7 +124,23 @@ def run_sum_scraper():
     chrome_options.add_argument("--disable-gpu")
     chrome_options.add_argument("--window-size=1920,1080")
     chrome_options.add_experimental_option('excludeSwitches', ['enable-logging'])
+    
+    # 🛡️ 核心防護：解決 GitHub Actions 記憶體不足與逾時問題
+    chrome_options.add_argument("--disable-dev-shm-usage")
+    chrome_options.add_argument("--no-sandbox")
+    
+    # 🏎️ 效能優化：不加載圖片，大幅加快網頁解析速度
+    prefs = {"profile.managed_default_content_settings.images": 2}
+    chrome_options.add_experimental_option("prefs", prefs)
+    
+    # ⏱️ 載入策略：DOM 樹出來就開爬，不等廣告
+    chrome_options.page_load_strategy = 'eager'
+
     driver = webdriver.Chrome(options=chrome_options)
+    
+    # ⏳ 強制延長等待時間
+    driver.set_page_load_timeout(120)
+    driver.set_script_timeout(120)
 
     valid_cars = []
     global_seen_ids = set()
@@ -140,8 +156,10 @@ def run_sum_scraper():
             url = SEARCH_URL.format(brand=task['brand'], model=task['model'])
             try:
                 driver.get(url)
-            except (TimeoutException, WebDriverException):
-                print(f"  ❌ {model_display} 網頁載入超時，跳過。")
+            except TimeoutException:
+                 print(f"  ⚠️ {model_display} 網頁載入超時，嘗試繼續執行...")
+            except WebDriverException as e:
+                print(f"  ❌ {model_display} 網頁載入失敗: {e}，跳過。")
                 continue
 
             while True:
@@ -150,7 +168,7 @@ def run_sum_scraper():
                         (By.CSS_SELECTOR, "div.shop-list, a.subj, li:has(a[href*='carinfo'])")))
                     driver.execute_script("window.scrollTo(0, document.body.scrollHeight/2);")
                     time.sleep(2)
-                except:
+                except TimeoutException:
                     break
 
                 soup = BeautifulSoup(driver.page_source, "html.parser")
