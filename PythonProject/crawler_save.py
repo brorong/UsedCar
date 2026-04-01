@@ -102,10 +102,26 @@ def run_save_scraper():
     chrome_options = Options()
     chrome_options.add_argument("--headless=new")
     chrome_options.add_argument("--disable-gpu")
+    chrome_options.add_argument("--window-size=1920,1080")
     chrome_options.add_argument('--ignore-certificate-errors')
     chrome_options.add_experimental_option('excludeSwitches', ['enable-logging'])
+    
+    # 🛡️ 核心防護：解決 GitHub Actions 記憶體不足與 Linux 權限問題
+    chrome_options.add_argument("--disable-dev-shm-usage")
+    chrome_options.add_argument("--no-sandbox")
+    
+    # 🏎️ 效能優化：不加載圖片，大幅加快網頁解析速度
+    prefs = {"profile.managed_default_content_settings.images": 2}
+    chrome_options.add_experimental_option("prefs", prefs)
+    
+    # ⏱️ 載入策略：DOM 樹出來就開爬，不等廣告或過度肥大的元素
+    chrome_options.page_load_strategy = 'eager'
+
     driver = webdriver.Chrome(options=chrome_options)
-    driver.set_page_load_timeout(30)
+    
+    # ⏳ 強制延長等待時間至 120 秒，避免 GitHub 網路波動導致的 Timeout
+    driver.set_page_load_timeout(120)
+    driver.set_script_timeout(120)
 
     valid_cars = []
     global_seen_ids = set()
@@ -121,8 +137,10 @@ def run_save_scraper():
             url = SEARCH_URL.format(brand=task['brand'], style=task['style'])
             try:
                 driver.get(url)
-            except (TimeoutException, WebDriverException):
-                print(f"  ❌ {model_display} 網頁載入超時，跳過。")
+            except TimeoutException:
+                print(f"  ⚠️ {model_display} 網頁載入超時，嘗試繼續執行...")
+            except WebDriverException as e:
+                print(f"  ❌ {model_display} 網頁載入失敗: {e}，跳過。")
                 continue
 
             while True:
@@ -132,8 +150,8 @@ def run_save_scraper():
 
                     driver.execute_script("window.scrollTo(0, document.body.scrollHeight/2);")
                     time.sleep(2)
-                except:
-                    break  # 網頁卡死或沒資料
+                except TimeoutException:
+                    break  # 網頁卡死或真的沒資料了
 
                 soup = BeautifulSoup(driver.page_source, "html.parser")
                 cards = soup.select('.car-block-type2_item, div[class*="car_item"], .car-card')
