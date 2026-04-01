@@ -1,11 +1,11 @@
 """
-sum_scraper.py  ——  SUM 賞車網爬蟲（抗封鎖強化版）
+crawler_sum.py  ——  SUM 賞車網爬蟲（抗封鎖強化版）
 
 策略說明
 ────────
 1. 優先用 requests + BeautifulSoup（速度快、不觸發 bot 偵測）
-2. 若靜態請求失敗（JS 渲染頁），自動 fallback 到 undetected-chromedriver
-3. page_load_strategy 改回 'normal'，確保 JS 渲染完成後再解析
+2. 若靜態請求失敗（JS 渲染頁或被擋），自動 fallback 到 undetected-chromedriver (或標準 Selenium)
+3. 針對 SUM 防火牆特性，將 page_load_strategy 設為 'none' 強制突圍
 4. 加入 retry + exponential backoff，應對偶發性封鎖
 """
 
@@ -24,7 +24,7 @@ from selenium.webdriver.support import expected_conditions as EC
 from selenium.common.exceptions import TimeoutException, WebDriverException, NoSuchElementException
 
 try:
-    import undetected_chromedriver as uc          # pip install undetected-chromedriver
+    import undetected_chromedriver as uc
     UC_AVAILABLE = True
 except ImportError:
     from selenium import webdriver
@@ -153,10 +153,11 @@ def _fetch_with_requests(url: str, retries: int = 3) -> Optional[BeautifulSoup]:
         try:
             resp = session.get(url, timeout=20)
             if resp.status_code == 200:
-                soup = BeautifulSoup(resp.text, "lxml")
+                # 🔥 已修改為 html.parser
+                soup = BeautifulSoup(resp.text, "html.parser")
                 if soup.select('div.shop-list, li a[href*="carinfo"]'):
                     return soup
-                log.debug("      [requests] 頁面無車輛資料（可能需要 JS 渲染）")
+                log.debug("      [requests] 頁面無車輛資料（可能需要 JS 渲染或遭阻擋）")
                 return None
             elif resp.status_code in (403, 429):
                 wait = 2 ** attempt + random.uniform(0, 1)
@@ -220,6 +221,8 @@ def _build_driver():
         options.add_experimental_option(
             "prefs", {"profile.managed_default_content_settings.images": 2}
         )
+        # 🔥 強制突圍：不等待多餘 JS 廣告載入
+        options.page_load_strategy = "none"
         driver = uc.Chrome(options=options, use_subprocess=True)
     else:
         from selenium import webdriver
@@ -230,6 +233,7 @@ def _build_driver():
         options.add_argument("--disable-dev-shm-usage")
         options.add_argument("--disable-gpu")
         options.add_argument("--window-size=1920,1080")
+        options.add_argument("--ignore-certificate-errors")
         options.add_argument(
             "user-agent=Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
             "AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36"
@@ -239,11 +243,11 @@ def _build_driver():
         options.add_experimental_option(
             "prefs", {"profile.managed_default_content_settings.images": 2}
         )
-        # ⚠️ 改為 normal，等待 JS 完整渲染（原本 eager 太早截停）
-        options.page_load_strategy = "normal"
+        # 🔥 強制突圍：防止 SUM 防火牆卡死頁面載入進度
+        options.page_load_strategy = "none"
         driver = webdriver.Chrome(options=options)
 
-    driver.set_page_load_timeout(45)   # 提高到 45 秒
+    driver.set_page_load_timeout(30)
     driver.set_script_timeout(30)
 
     if not UC_AVAILABLE:
@@ -258,7 +262,7 @@ def _build_driver():
     return driver
 
 
-def _wait_for_list(driver, timeout=15) -> bool:
+def _wait_for_list(driver, timeout=20) -> bool:
     try:
         WebDriverWait(driver, timeout).until(
             EC.presence_of_element_located(
@@ -307,23 +311,24 @@ def _scrape_task_selenium(driver, task: dict, seen_ids: set) -> list:
     try:
         driver.get(url)
     except TimeoutException:
-        log.warning("    [selenium] 頁面逾時，嘗試解析現有 DOM...")
+        log.warning("    [selenium] 頁面逾時，嘗試強制介入解析現有 DOM...")
     except WebDriverException as e:
         log.error(f"    [selenium] 載入失敗：{e.__class__.__name__}")
         return results
 
-    time.sleep(random.uniform(2, 4))
+    time.sleep(random.uniform(1, 3))
 
     while True:
-        if not _wait_for_list(driver, timeout=15):
-            log.warning(f"    [selenium] 第 {page} 頁無車輛列表")
+        if not _wait_for_list(driver, timeout=20):
+            log.warning(f"    [selenium] 第 {page} 頁找不到車輛列表 (可能無資料或遭阻擋)")
             break
 
         driver.execute_script("window.scrollTo(0, document.body.scrollHeight / 2);")
         time.sleep(random.uniform(0.8, 1.5))
 
         old_href  = _get_first_href(driver)
-        soup      = BeautifulSoup(driver.page_source, "lxml")
+        # 🔥 已修改為 html.parser
+        soup      = BeautifulSoup(driver.page_source, "html.parser")
         cards     = soup.select('div.shop-list, li:has(a[href*="carinfo"])')
         new_count = 0
 
@@ -348,8 +353,8 @@ def _scrape_task_selenium(driver, task: dict, seen_ids: set) -> list:
 
         new_href = _get_first_href(driver)
         if new_href and new_href == old_href:
-            log.warning("    ⚠️ 頁面疑似未刷新，額外等待...")
-            time.sleep(3)
+            log.warning("    ⚠️ 頁面疑似未刷新，額外等待 2 秒...")
+            time.sleep(2)
 
         page += 1
 
@@ -361,16 +366,16 @@ def _scrape_task_selenium(driver, task: dict, seen_ids: set) -> list:
 # ──────────────────────────────────────────────
 
 def run_sum_scraper():
-    log.info("[系統] 啟動 SUM 賞車網爬蟲（抗封鎖強化版）...")
+    log.info("[系統] 啟動 SUM 賞車網爬蟲（抗封鎖混合版）...")
 
     # 探測靜態請求是否可用
     probe_url  = SEARCH_URL.format(brand=SEARCH_TASKS[0]["brand"], model=SEARCH_TASKS[0]["model"])
     use_static = _fetch_with_requests(probe_url) is not None
 
     if use_static:
-        log.info("[系統] 靜態請求可用，使用 requests 模式（速度快）")
+        log.info("[系統] 靜態請求暢通，使用 requests 模式（高鐵模式）")
     else:
-        log.info("[系統] 靜態請求失敗，切換至 Selenium 模式")
+        log.info("[系統] 靜態請求遭阻擋，啟動 Selenium 裝甲模式突圍")
 
     valid_cars = []
     seen_ids   = set()
@@ -398,10 +403,7 @@ def run_sum_scraper():
         log.info(f"[系統] 掃描完畢，總計入庫 {len(valid_cars)} 筆。")
         db_manager.update_listings("SUM", valid_cars)
     else:
-        log.error("[系統] 未抓取到任何資料。請確認：")
-        log.error("  1. 網路連線是否正常")
-        log.error("  2. pip install undetected-chromedriver  （強化 bot 偽裝）")
-        log.error("  3. SUM 網站 HTML 結構是否有更新（CSS selector 可能失效）")
+        log.error("[系統] 未抓取到任何資料。")
 
 
 if __name__ == "__main__":
