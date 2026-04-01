@@ -90,7 +90,7 @@ def parse_car_card(card_div, target_brand, target_model):
 
 
 def run_save_scraper():
-    print("[系統] 啟動 Selenium 隱形模式，掃描 SAVE 認證車聯盟 (防死鎖優化版)...")
+    print("[系統] 啟動 Selenium 隱形模式，掃描 SAVE 認證車聯盟 (精準翻頁版)...")
     chrome_options = Options()
     chrome_options.add_argument("--headless=new")
     chrome_options.add_argument("--disable-gpu")
@@ -109,8 +109,6 @@ def run_save_scraper():
     chrome_options.page_load_strategy = 'eager'
 
     driver = webdriver.Chrome(options=chrome_options)
-    
-    # ⏳ 降回 30 秒停損點，卡住就強制中斷，不浪費 8 分鐘乾等
     driver.set_page_load_timeout(30)
     driver.set_script_timeout(30)
 
@@ -143,6 +141,13 @@ def run_save_scraper():
                     print(f"    ⚠️ 找不到車輛列表，該車型可能無資料或網頁卡死。")
                     break
 
+                # 記錄翻頁前的首台車輛，用來驗證網頁是否真的更新了
+                old_first_car = ""
+                try:
+                    old_first_car = driver.find_element(By.CSS_SELECTOR, ".car-block-type2_item a, .car_item a, .car-card a").get_attribute("href")
+                except:
+                    pass
+
                 soup = BeautifulSoup(driver.page_source, "html.parser")
                 cards = soup.select('.car-block-type2_item, div[class*="car_item"], .car-card')
 
@@ -158,7 +163,7 @@ def run_save_scraper():
                 if new_count == 0 or page_count >= 50:
                     break
 
-                # 🔥 終極防卡死：尋找並切換下一頁
+                # 🔥 修正翻頁邏輯
                 next_page_target = str(page_count + 1)
                 try:
                     try:
@@ -166,16 +171,22 @@ def run_save_scraper():
                     except NoSuchElementException:
                         next_btn = driver.find_element(By.XPATH, "//a[contains(text(), '下一頁') or contains(text(), '下頁') or text()='>']")
                     
-                    print(f"    -> 找到第 {next_page_target} 頁，執行安全翻頁...")
+                    print(f"    -> 找到第 {next_page_target} 頁，執行翻頁...")
                     
-                    # 🚀 關鍵解法：使用 setTimeout 讓 JS 異步點擊，Selenium 絕對不會卡死！
-                    driver.execute_script("setTimeout(function(){ arguments[0].click(); }, 50);", next_btn)
+                    # 🚀 正確的 JS 點擊寫法，不使用 setTimeout，直接觸發
+                    driver.execute_script("arguments[0].click();", next_btn)
                     
-                    # 等待舊按鈕從畫面上消失 (代表網頁已經成功 PostBack 刷新)
+                    # 簡單粗暴地等待 3 秒讓 ASP.NET 處理 PostBack
+                    time.sleep(3)
+                    
+                    # 防呆驗證：檢查第一台車是否改變了，確保真的有換頁
                     try:
-                        WebDriverWait(driver, 15).until(EC.staleness_of(next_btn))
-                    except TimeoutException:
-                        print("    ⚠️ 翻頁等待超時，直接嘗試擷取新畫面...")
+                        current_first_car = driver.find_element(By.CSS_SELECTOR, ".car-block-type2_item a, .car_item a, .car-card a").get_attribute("href")
+                        if current_first_car == old_first_car:
+                            print("    ⚠️ 網頁疑似未刷新，給予額外 2 秒緩衝...")
+                            time.sleep(2)
+                    except:
+                        pass
                         
                     page_count += 1
                     
