@@ -11,9 +11,11 @@ from selenium.webdriver.chrome.options import Options
 from selenium.webdriver.common.by import By
 from selenium.webdriver.support.ui import WebDriverWait
 from selenium.webdriver.support import expected_conditions as EC
+from selenium.common.exceptions import TimeoutException, WebDriverException
+
+import db_manager  # 🔥 載入資料庫總管
 
 # ⚙️ 設定區
-DB_NAME = 'car_listings_v2.db'
 LUXLIFE_LIST_URL = "https://luxlife.luxgen-motor.com.tw/car-list"
 
 
@@ -24,18 +26,36 @@ def fetch_luxlife_cars() -> List[Dict]:
     print("🚀 啟動 Selenium 隱形瀏覽器，準備抓取 LuxLife 原廠認證中古車...")
     standardized_cars = []
 
-    # 隱形瀏覽器設定
+    # 隱形瀏覽器設定 (🔥 終極效能優化版)
     chrome_options = Options()
-    chrome_options.add_argument("--headless")
+    chrome_options.add_argument("--headless=new")
     chrome_options.add_argument("--disable-gpu")
     chrome_options.add_argument("--window-size=1920,1080")
     chrome_options.add_argument("--no-sandbox")
-    chrome_options.add_argument("--disable-dev-shm-usage")
+    chrome_options.add_argument("--disable-dev-shm-usage") # 🛡️ 解決 GitHub 記憶體不足
+    
+    # 🏎️ 效能優化：不加載圖片，大幅加快速度並節省記憶體
+    prefs = {"profile.managed_default_content_settings.images": 2}
+    chrome_options.add_experimental_option("prefs", prefs)
+    
+    # ⏱️ Eager 模式 (DOM 載入完就開爬，不等廣告/圖片)
+    chrome_options.page_load_strategy = 'eager'
 
     driver = None
     try:
         driver = webdriver.Chrome(options=chrome_options)
-        driver.get(LUXLIFE_LIST_URL)
+        
+        # ⏳ 強制延長連線與腳本等待時間到 120 秒
+        driver.set_page_load_timeout(120)
+        driver.set_script_timeout(120)
+        
+        try:
+            driver.get(LUXLIFE_LIST_URL)
+        except TimeoutException:
+            print("⚠️ 警告: 載入 LuxLife 頁面時超時，嘗試繼續執行...")
+        except WebDriverException as e:
+            print(f"❌ 網頁載入失敗: {e}")
+            return []
 
         print("⏳ 等待初始網頁動態渲染資料...")
         # 確保第一批車輛已經載入
@@ -104,10 +124,11 @@ def fetch_luxlife_cars() -> List[Dict]:
             price_type = "normal" if price > 0 else "inquiry"
 
             car_info = {
-                "global_car_id": f"luxlife_{car_id}",
+                "car_id": car_id, # 🔥 加入純粹的 car_id 讓 db_manager 能靈活運用
+                "global_car_id": f"LUXLIFE_{car_id}",
                 "platform": "LUXLIFE",
                 "brand": brand_text.upper(),
-                "model": model_text.upper(),  # ✅ 這裡已加入強制轉大寫
+                "model": model_text.upper(),  # ✅ 強制轉大寫
                 "year": year,
                 "mileage": mileage,
                 "location": location,
@@ -131,80 +152,10 @@ def fetch_luxlife_cars() -> List[Dict]:
 
 
 # ══════════════════════════════════════════════════════════════════════════════
-#  🗄️ 步驟 3：資料庫比對與無縫寫入
-# ══════════════════════════════════════════════════════════════════════════════
-def save_luxlife_to_db(cars: List[Dict]):
-    if not cars: return
-    today_str = datetime.date.today().strftime("%Y-%m-%d")
-
-    try:
-        conn = sqlite3.connect(DB_NAME, timeout=10)
-        cursor = conn.cursor()
-
-        fetched_ids = []
-        new_cars_count, price_update_count = 0, 0
-
-        for car in cars:
-            gid = car["global_car_id"]
-            fetched_ids.append(gid)
-
-            cursor.execute("SELECT status FROM cars_master WHERE global_car_id = ?", (gid,))
-            existing_car = cursor.fetchone()
-
-            if existing_car:
-                cursor.execute("""
-                               UPDATE cars_master
-                               SET last_seen = ?,
-                                   status    = 'online',
-                                   mileage   = ?,
-                                   location  = ?
-                               WHERE global_car_id = ?
-                               """, (car["last_seen"], car["mileage"], car["location"], gid))
-            else:
-                cursor.execute("""
-                               INSERT INTO cars_master
-                               (global_car_id, platform, brand, model, year, mileage, location, url, status, first_seen,
-                                last_seen)
-                               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-                               """, (gid, car["platform"], car["brand"], car["model"],
-                                     car["year"], car["mileage"], car["location"], car["url"],
-                                     car["status"], today_str, car["last_seen"]))
-                new_cars_count += 1
-
-            cursor.execute("SELECT price FROM price_history WHERE global_car_id = ? ORDER BY record_date DESC LIMIT 1",
-                           (gid,))
-            last_price_record = cursor.fetchone()
-
-            if not last_price_record or last_price_record[0] != car["price"]:
-                cursor.execute("""
-                               INSERT INTO price_history (global_car_id, price, price_type, record_date)
-                               VALUES (?, ?, ?, ?)
-                               """, (gid, car["price"], car["price_type"], today_str))
-                if last_price_record: price_update_count += 1
-
-        if fetched_ids:
-            placeholders = ','.join(['?'] * len(fetched_ids))
-            cursor.execute(f"""
-                UPDATE cars_master 
-                SET status = 'offline' 
-                WHERE platform = 'LUXLIFE' AND status = 'online' AND global_car_id NOT IN ({placeholders})
-            """, fetched_ids)
-            offline_count = cursor.rowcount
-
-        conn.commit()
-        print(
-            f"📊 LUXLIFE 資料庫更新完成: 新增 {new_cars_count} 台 | 價格異動 {price_update_count} 筆 | 偵測下架 {offline_count} 台")
-
-    except Exception as e:
-        conn.rollback()
-        print(f"❌ 寫入資料庫時發生錯誤: {e}")
-    finally:
-        conn.close()
-
-
-# ══════════════════════════════════════════════════════════════════════════════
-#  啟動區塊
+#  啟動區塊：直接串接 db_manager 進行寫入與狀態更新
 # ══════════════════════════════════════════════════════════════════════════════
 if __name__ == "__main__":
     luxlife_data = fetch_luxlife_cars()
-    save_luxlife_to_db(luxlife_data)
+    if luxlife_data:
+        # 🔥 直接將清洗好的資料交給總管，省去落落長的 SQL 寫入代碼
+        db_manager.update_listings("LUXLIFE", luxlife_data)
