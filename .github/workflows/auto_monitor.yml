@@ -34,11 +34,11 @@ jobs:
         # 確保您的根目錄有 requirements.txt，內容需含 requests, beautifulsoup4, selenium
         if [ -f requirements.txt ]; then pip install -r requirements.txt; fi
 
-    - name: 🕷️ 5. 執行【1/6】8891 爬蟲
-      env:
-        PYTHONPATH: ${{ github.workspace }}/PythonProject
-      run: python PythonProject/crawler_8891.py
-      continue-on-error: true
+    # - name: 🕷️ 5. 執行【1/6】8891 爬蟲
+    #   env:
+    #     PYTHONPATH: ${{ github.workspace }}/PythonProject
+    #   run: python PythonProject/crawler_8891.py
+    #   continue-on-error: true
 
     - name: 🕷️ 6. 執行【2/6】SAVE 爬蟲
       env:
