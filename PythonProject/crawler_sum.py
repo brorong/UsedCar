@@ -1,5 +1,6 @@
 import re
 import time
+import random
 from bs4 import BeautifulSoup
 from selenium import webdriver
 from selenium.webdriver.chrome.options import Options
@@ -40,8 +41,7 @@ def clean_price(raw_str):
 
 def clean_mileage(raw_str):
     if not raw_str: return 0
-    raw_str = raw_str.replace(",", "").replace(" ", "").replace("\n", "").replace("公里", "").replace("km", "").replace(
-        "KM", "")
+    raw_str = raw_str.replace(",", "").replace(" ", "").replace("\n", "").replace("公里", "").replace("km", "").replace("KM", "")
     m = re.search(r"(\d+)", raw_str)
     return int(m.group(1)) if m else 0
 
@@ -118,7 +118,7 @@ def parse_car_card(card_div, target_brand, target_model):
 
 
 def run_sum_scraper():
-    print("[系統] 啟動 Selenium 隱形無頭模式，掃描 SUM 賞車網 (突破翻頁限制版)...")
+    print("[系統] 啟動 Selenium 隱形無頭模式，掃描 SUM 賞車網 (突破翻頁限制與防阻擋版)...")
     chrome_options = Options()
     chrome_options.add_argument("--headless=new")
     chrome_options.add_argument("--disable-gpu")
@@ -129,14 +129,23 @@ def run_sum_scraper():
     chrome_options.add_argument("--disable-dev-shm-usage")
     chrome_options.add_argument("--no-sandbox")
     
+    # 🛡️ 新增：防封鎖特徵隱藏與真實 User-Agent
+    chrome_options.add_argument("--disable-blink-features=AutomationControlled")
+    chrome_options.add_experimental_option("excludeSwitches", ["enable-automation"])
+    chrome_options.add_experimental_option('useAutomationExtension', False)
+    chrome_options.add_argument("user-agent=Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36")
+    
     # 🏎️ 效能優化：不加載圖片，大幅加快網頁解析速度
     prefs = {"profile.managed_default_content_settings.images": 2}
     chrome_options.add_experimental_option("prefs", prefs)
     
-    # ⏱️ 載入策略：DOM 樹出來就開爬，不等廣告
-    chrome_options.page_load_strategy = 'eager'
+    # ⏱️ 載入策略修改：改回 normal (等待腳本載入)，避免 eager 導致 JS 渲染不及而抓不到資料
+    chrome_options.page_load_strategy = 'normal'
 
     driver = webdriver.Chrome(options=chrome_options)
+    
+    # 🛡️ 新增：抹除 WebDriver 屬性，防阻擋
+    driver.execute_script("Object.defineProperty(navigator, 'webdriver', {get: () => undefined})")
     
     # ⏳ 強制延長等待時間
     driver.set_page_load_timeout(120)
@@ -147,19 +156,33 @@ def run_sum_scraper():
 
     try:
         for task in SEARCH_TASKS:
+            # 🛡️ 新增：每次搜尋前隨機休息，模擬人類節奏，避免觸發 WAF
+            time.sleep(random.uniform(3, 7))
+            
             page_count = 1
             model_total = 0
             model_display = task['display']
             print(f"  🔍 開始搜尋 {model_display}...")
 
-            # 🔥 修正：只在第一頁使用 get() 載入
             url = SEARCH_URL.format(brand=task['brand'], model=task['model'])
-            try:
-                driver.get(url)
-            except TimeoutException:
-                 print(f"  ⚠️ {model_display} 網頁載入超時，嘗試繼續執行...")
-            except WebDriverException as e:
-                print(f"  ❌ {model_display} 網頁載入失敗: {e}，跳過。")
+            
+            # 🛡️ 新增：重試機制，針對單次網路錯誤進行補救
+            load_success = False
+            for attempt in range(3):
+                try:
+                    driver.get(url)
+                    load_success = True
+                    break
+                except TimeoutException:
+                    print(f"  ⚠️ {model_display} 網頁載入超時 (第 {attempt+1} 次嘗試)，休息後重試...")
+                    time.sleep(5)
+                except WebDriverException as e:
+                    print(f"  ⚠️ {model_display} 網頁載入失敗 (第 {attempt+1} 次嘗試): {e}")
+                    time.sleep(5)
+            
+            # 若重試三次皆失敗，則跳過此車款
+            if not load_success:
+                print(f"  ❌ {model_display} 三次連線嘗試皆失敗，跳過。")
                 continue
 
             while True:
@@ -189,7 +212,7 @@ def run_sum_scraper():
                 if new_count == 0 or page_count >= 50:
                     break
 
-                # 🔥 核心修正：模擬人類點擊下一頁按鈕
+                # 🔥 模擬人類點擊下一頁按鈕
                 next_page_target = str(page_count + 1)
                 try:
                     # 嘗試點擊精確的數字頁碼
@@ -205,19 +228,4 @@ def run_sum_scraper():
                                                        "//a[contains(@class, 'next') or contains(text(), '下一頁') or contains(text(), '下頁') or text()='>']")
                         driver.execute_script("arguments[0].click();", next_btn)
                         page_count += 1
-                        time.sleep(3)
-                    except NoSuchElementException:
-                        break  # 真的連按鈕都找不到了，代表已經翻到最後一頁
-
-            print(f"  ✅ {model_display} 完成！共抓取 {model_total} 筆資料 (掃描至第 {page_count} 頁)")
-
-    finally:
-        driver.quit()
-
-    if valid_cars:
-        print(f"[系統] SUM 賞車網掃描完畢，總計入庫 {len(valid_cars)} 筆。")
-        db_manager.update_listings("SUM", valid_cars)
-
-
-if __name__ == "__main__":
-    run_sum_scraper()
+                        time.sleep(3
