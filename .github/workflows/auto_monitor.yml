@@ -40,17 +40,17 @@ jobs:
     #   run: python PythonProject/crawler_8891.py
     #   continue-on-error: true
 
-    - name: 🕷️ 6. 執行【2/6】SAVE 爬蟲
-      env:
-        PYTHONPATH: ${{ github.workspace }}/PythonProject
-      run: python PythonProject/crawler_save.py
-      continue-on-error: true
+    # - name: 🕷️ 6. 執行【2/6】SAVE 爬蟲
+    #   env:
+    #     PYTHONPATH: ${{ github.workspace }}/PythonProject
+    #   run: python PythonProject/crawler_save.py
+    #   continue-on-error: true
 
-    - name: 🕷️ 7. 執行【3/6】HOT 爬蟲
-      env:
-        PYTHONPATH: ${{ github.workspace }}/PythonProject
-      run: python PythonProject/crawler_hot.py
-      continue-on-error: true
+    # - name: 🕷️ 7. 執行【3/6】HOT 爬蟲
+    #   env:
+    #     PYTHONPATH: ${{ github.workspace }}/PythonProject
+    #   run: python PythonProject/crawler_hot.py
+    #   continue-on-error: true
 
     - name: 🕷️ 8. 執行【4/6】SUM 爬蟲
       env:
