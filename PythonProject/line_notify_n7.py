@@ -8,6 +8,7 @@ Luxgen N7 專屬 LINE 推播模板 (新增電洽/無價格統計)
 import warnings
 warnings.filterwarnings("ignore", category=FutureWarning)
 
+import os  # 🔥 修正：補上必備的 os 模組
 import sqlite3
 import datetime
 import requests
@@ -18,6 +19,7 @@ from typing import List, Dict, Optional
 #  ⚙️  設定區
 # ══════════════════════════════════════════════════════════════════════════════
 DB_NAME = "car_listings_v2.db"
+# 確保這些環境變數有正確設定在你的系統或 GitHub Secrets 中
 LINE_CHANNEL_ACCESS_TOKEN = os.getenv("LINE_TOKEN", "您的備用TOKEN")
 LINE_USER_ID = os.getenv("LINE_GROUP_ID", "您的群組ID")
 LINE_MSG_LIMIT = 4500
@@ -56,6 +58,7 @@ def get_conn() -> sqlite3.Connection:
 def fetch_n7_data() -> Dict:
     today   = datetime.date.today()
     today_s = today.strftime("%Y-%m-%d")
+    # 🔥 修正：如果只是因為爬蟲延遲才抓三天前，這裡維持原樣，但要注意 net_change 的解讀
     w3_s    = (today - datetime.timedelta(days=3)).strftime("%Y-%m-%d")
 
     conn = get_conn()
@@ -81,13 +84,13 @@ def fetch_n7_data() -> Dict:
     new_today_rows = [dict(r) for r in cur.fetchall()]
     new_today = sum(r["cnt"] for r in new_today_rows)
 
-    # ── 3. 今日下架 ──
+    # ── 3. 今日下架 (以 today_s 為準確保與新上架對稱) ──
     cur.execute("""
         SELECT platform, COUNT(*) AS cnt
         FROM cars_master
-        WHERE status = 'offline' AND UPPER(brand) = ? AND UPPER(model) LIKE ? AND last_seen >= ?
+        WHERE status = 'offline' AND UPPER(brand) = ? AND UPPER(model) LIKE ? AND last_seen = ?
         GROUP BY platform
-    """, (TARGET_BRAND, TARGET_MODEL_LIKE, w3_s))
+    """, (TARGET_BRAND, TARGET_MODEL_LIKE, today_s))
     delisted_rows = [dict(r) for r in cur.fetchall()]
     delisted = sum(r["cnt"] for r in delisted_rows)
 
@@ -163,7 +166,8 @@ def build_price_distribution(prices_raw: List[int]) -> List[Dict]:
 
 def bar_chart(count: int, total: int, width: int = 10) -> str:
     if total == 0: return "░" * width
-    filled = round(count / total * width)
+    # 🛡️ 確保不會因為資料異常超出長條圖邊界
+    filled = min(round(count / total * width), width)
     return "█" * filled + "░" * (width - filled)
 
 
@@ -250,7 +254,8 @@ def build_message(data: Dict) -> str:
     lines += ["【 📅 年式行情與里程 】"]
     for y in sorted(year_stats.keys(), reverse=True):
         stat = year_stats[y]
-        y_avg = stat["total_price"] / stat["cnt"] / 10000
+        # 🛡️ 確保 cnt 不為 0 防呆
+        y_avg = (stat["total_price"] / stat["cnt"] / 10000) if stat["cnt"] > 0 else 0
         lines.append(f"  {y}年：{stat['cnt']:>2}台 | 均價 {y_avg:.1f} 萬")
     lines.append(f"\n  🛣️ 市場平均里程：{avg_mileage:.1f} 萬公里")
     for label, count in mileage_bands.items():
@@ -285,15 +290,29 @@ def build_message(data: Dict) -> str:
 
 def send_line(message: str):
     if not LINE_CHANNEL_ACCESS_TOKEN or not LINE_USER_ID:
-        print(message); return
+        print("未設定 LINE_TOKEN 或 LINE_GROUP_ID，僅輸出至終端機：")
+        print(message)
+        return
+        
     url = "https://api.line.me/v2/bot/message/push"
-    headers = {"Content-Type": "application/json", "Authorization": f"Bearer {LINE_CHANNEL_ACCESS_TOKEN}"}
+    headers = {
+        "Content-Type": "application/json", 
+        "Authorization": f"Bearer {LINE_CHANNEL_ACCESS_TOKEN}"
+    }
+    
+    # 支援超長訊息分段發送
     for i in range(0, len(message), LINE_MSG_LIMIT):
         chunk = message[i : i + LINE_MSG_LIMIT]
-        payload = {"to": LINE_USER_ID, "messages": [{"type": "text", "text": chunk}]}
+        payload = {
+            "to": LINE_USER_ID, 
+            "messages": [{"type": "text", "text": chunk}]
+        }
         resp = requests.post(url, headers=headers, json=payload, timeout=10)
-        if resp.status_code != 200: print(f"LINE 發送失敗：{resp.status_code} {resp.text}")
-    print("✅ N7 戰情報推播完成！")
+        
+        if resp.status_code != 200: 
+            print(f"❌ LINE 發送失敗：HTTP {resp.status_code} - {resp.text}")
+        else:
+            print("✅ N7 戰情報推播完成！")
 
 
 if __name__ == "__main__":
@@ -301,6 +320,9 @@ if __name__ == "__main__":
         data = fetch_n7_data()
         message = build_message(data)
         print("=" * 40 + "\n" + message + "\n" + "=" * 40)
-        send_line(message) # 測試成功後取消註解
+        
+        # 正式環境自動發送
+        send_line(message) 
     except Exception as e:
-        print(f"❌ 系統錯誤：{e}"); raise
+        print(f"❌ 系統錯誤：{e}")
+        raise
